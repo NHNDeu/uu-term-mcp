@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# macOS 上注册 uu-term MCP（用户级）。没在 Mac 上测过，出问题把报错发给 Claude。
+# macOS 上注册 uu-term MCP（用户级）。
+# 注意：macOS 版 uuyc-cli 暂无远程执行接口，注册后仅 uu_device_list 可用，详见 README"平台支持"。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -24,4 +25,5 @@ echo "uuyc-cli: $CLI"
 command -v claude >/dev/null || { echo "找不到 claude 命令" >&2; exit 1; }
 claude mcp remove uu-term -s user >/dev/null 2>&1 || true
 claude mcp add uu-term --scope user -e UU_CLI="$CLI" -- python3 "$HERE/server.py"
-echo "已注册。新开一个 Claude 会话后，让它用 uu_exec 在穿墙上执行 hostname。"
+echo "已注册。新开一个 Claude 会话后，可用 uu_device_list 查看设备。"
+echo "提示：macOS 上暂不支持 uu_exec 等远程执行工具（uuyc-cli 无对应接口）。"

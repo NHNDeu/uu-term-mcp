@@ -2,8 +2,12 @@
 """UU 远程终端 MCP 服务（stdio）。
 
 把 `uuyc-cli term` 包成几个工具，让 Claude 直接在被控电脑（默认"穿墙"）的 PowerShell 里执行命令。
-`term new` 要求交互式终端，所以这里用伪终端驱动：Windows 用 pywinpty，macOS/Linux 用标准库 pty。
-除 Windows 上的 pywinpty 外没有第三方依赖，MCP 协议（stdio、换行分隔的 JSON-RPC）直接手写。
+`term new` 要求交互式终端，所以这里用 pywinpty 提供的伪终端驱动。
+MCP 协议（stdio、换行分隔的 JSON-RPC）直接手写，除 pywinpty 外没有第三方依赖。
+
+平台支持：主控端 Windows → 被控端 Windows。
+macOS 版 uuyc-cli（1.0.0）的 `term` 只能打开终端列表界面，没有远程执行命令的接口，
+因此在 macOS 上只有 uu_device_list 可用，其余工具会返回说明性错误。
 
 环境变量：
   UU_CLI              uuyc-cli 的完整路径（默认自动找）
@@ -73,6 +77,14 @@ def run_cli(args, timeout=60):
 def list_devices():
     code, out = run_cli(["device", "list"], 30)
     devices = []
+    try:
+        data = json.loads(out)
+        for d in data["data"]["devices"]:
+            devices.append({"name": d["deviceName"], "id": d["deviceId"],
+                            "status": "online" if d.get("isOnline") else "offline"})
+        return code, out, devices
+    except (ValueError, KeyError, TypeError):
+        devices = []
     for line in out.splitlines():
         m = re.match(r"^(.*?) \(([a-z0-9]{16})\): (\w+)\s*$", line.strip())
         if m:
@@ -89,6 +101,13 @@ def resolve_device(device):
         if d["name"] == device:
             return d["id"]
     raise RuntimeError("设备不存在：%s（用 uu_device_list 看一下名字或 ID）" % device)
+
+
+def require_windows():
+    if not IS_WIN:
+        raise RuntimeError(
+            "当前平台（%s）暂不支持远程执行：macOS 版 uuyc-cli 的 `term` 只能打开终端界面，"
+            "没有创建会话/执行命令的接口。该功能目前仅支持 Windows 主控端。" % platform.system())
 
 
 def kill_session(device_id, name):
@@ -170,6 +189,7 @@ class Pty:
 
 
 def exec_remote(command, device=None, timeout=60):
+    require_windows()
     if len(command) > MAX_COMMAND:
         raise RuntimeError("命令太长（%d 字符，上限 %d）：请拆成多条，或让被控端用 git 拉脚本再执行" % (len(command), MAX_COMMAND))
     timeout = max(5, min(int(timeout), 600))
@@ -228,7 +248,7 @@ TOOLS = [
         "description": (
             "在被控电脑（默认「穿墙」）的 PowerShell 里执行命令并返回输出和退出码。命令真的会在对方电脑上执行，"
             "破坏性操作（删除、改系统设置、装卸软件）要先问用户。注意：建立终端连接会挤掉用户正在用的该设备的远程桌面；"
-            "本机正被别的设备远控时连不出去。输出里的中文可能乱码，必要时只看 ASCII 部分。"
+            "本机正被别的设备远控时连不出去。输出里的中文可能乱码，必要时只看 ASCII 部分。目前仅支持 Windows 主控端。"
         ),
         "inputSchema": {
             "type": "object",
@@ -266,10 +286,12 @@ def call_tool(name, args):
         head = "exit_code=%s%s\n" % (result["exit_code"], "（超时，输出可能不完整）" if result["timed_out"] else "")
         return head + result["output"]
     if name == "uu_sessions":
+        require_windows()
         code, out = run_cli(["term", "-d", resolve_device(args.get("device")), "ls", "--json"], 60)
         start = out.find("{")
         return out[start:] if start >= 0 else out
     if name == "uu_kill_session":
+        require_windows()
         code, out = run_cli(["term", "-d", resolve_device(args.get("device")), "kill", args["name"]], 30)
         return out.strip().splitlines()[-1] if out.strip() else "exit=%s" % code
     raise RuntimeError("未知工具：%s" % name)

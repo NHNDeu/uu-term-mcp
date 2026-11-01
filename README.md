@@ -1,68 +1,87 @@
 # uu-term-mcp
 
-把 UU 远程的 `uuyc-cli term` 包成 MCP 工具，让 Claude 直接在被控电脑（默认"穿墙"）的 PowerShell 里执行命令。
-单文件 `server.py`，stdio 协议，除 Windows 上的 `pywinpty` 外没有第三方依赖。
+基于 UU 远程命令行工具 `uuyc-cli` 的 MCP（Model Context Protocol）服务，使 Claude 等 AI 客户端可以在远端 Windows 电脑的 PowerShell 中执行命令并获取输出与退出码。
+
+单文件实现（`server.py`），stdio 传输，MCP 协议部分自行实现，唯一第三方依赖是 Windows 上的 [`pywinpty`](https://github.com/andfoy/pywinpty)。
+
+## 平台支持
+
+| 主控端（运行本服务） | 被控端 | 状态 |
+|---|---|---|
+| Windows | Windows | ✅ 支持，已在真实设备上验证 |
+| macOS | Windows | ⚠️ 仅支持设备列表（`uu_device_list`），暂不支持远程执行 |
+| 任意 | macOS / Linux | ❌ UU 远程终端功能本身要求被控端为 Windows |
+
+**macOS 主控端的限制原因：** macOS 版 `uuyc-cli`（1.0.0，UU 远程 4.44.0）的 `term` 子命令仅提供 `open` / `exit`，作用是在 UU 主程序中打开某设备的终端列表界面，不提供创建会话、发送命令、读取输出的接口；`lterm` 管理的是本机终端会话。因此无法通过 CLI 在 macOS 上驱动远程终端。待 UU 官方补充相应接口后再行适配。
 
 ## 工具
 
-| 工具 | 作用 |
-|---|---|
-| `uu_device_list` | 列出账号下设备（名称、ID、在线状态） |
-| `uu_exec` | 在被控端 PowerShell 里执行命令/脚本，返回退出码和输出；`command` 必填，`device`（ID 或名称，默认穿墙）、`timeout_s`（默认 60，最大 600）可选 |
-| `uu_sessions` | 列出被控端已有终端会话（JSON） |
-| `uu_kill_session` | 结束指定名字的终端会话（只清理自己建的 `mcp*`） |
+| 工具 | 说明 | macOS |
+|---|---|---|
+| `uu_device_list` | 列出账号下设备（名称、ID、在线状态） | ✅ |
+| `uu_exec` | 在被控端 PowerShell 中执行命令或脚本，返回退出码与输出。参数：`command`（必填）、`device`（ID 或名称，默认「穿墙」）、`timeout_s`（默认 60，最大 600） | ❌ |
+| `uu_sessions` | 列出被控端已有终端会话（JSON） | ❌ |
+| `uu_kill_session` | 结束指定名称的终端会话（仅用于清理本服务创建的 `mcp*` 会话） | ❌ |
 
-每次 `uu_exec` 都会新建一个随机名字的会话（`mcpxxxxxx`），跑完自动 `exit` 并 kill，不留残会话。命令内容会整体转成 Base64 的 `-EncodedCommand` 发送，所以引号、多行脚本、`$` 都不会被吃掉。命令上限 8000 字符。
+每次 `uu_exec` 调用都会新建一个随机名称的会话（`mcpxxxxxx`），执行完毕后自动 `exit` 并 kill，不遗留会话。命令内容整体转为 Base64 的 `-EncodedCommand` 发送，引号、多行脚本、`$` 均不会被转义破坏；命令长度上限 8000 字符。
 
-## 前提
+## 前提条件
 
-1. 本机 UU 远程主程序在运行并已登录（否则 `uuyc-cli` 退出码 2）。
-2. 本机能找到 `uuyc-cli`：Windows 默认找 `C:\Program Files\NetEase\GameViewer\bin\uuyc-cli.exe`；装在别处就设环境变量 `UU_CLI`。
-3. 被控端必须是 Windows（`term` 的限制），主控端 Windows / macOS 都行。
-4. **本机正被别的设备远程控制时，连不出去**（报 "currently being remotely controlled"，工具会返回错误）。要先在 UU 里"断开所有远控"。
-5. 建立终端连接会挤掉用户正在用的该设备的远程桌面。
+1. 本机已安装 UU 远程主程序并登录，且主程序处于运行状态（否则 `uuyc-cli` 退出码为 2）。
+2. 能找到 `uuyc-cli`：Windows 默认路径为 `C:\Program Files\NetEase\GameViewer\bin\uuyc-cli.exe`，安装在其他位置时设置环境变量 `UU_CLI`。
+3. 被控端为 Windows 系统。
+4. 本机正被其他设备远程控制时无法发起终端连接（报 "currently being remotely controlled"），需先在 UU 中断开所有远控。
+5. 建立终端连接会挤掉被控端当前正在使用的远程桌面连接。
 
 ## 安装（Windows）
 
-依赖装在项目内的 `.pylib`，不动系统 Python（`.pylib` 已在 `.gitignore`，换机器要重装）：
+依赖安装在项目内的 `.pylib` 目录，不影响系统 Python（该目录已列入 `.gitignore`，更换机器后需重新安装）：
 
 ```powershell
 py -m pip install pywinpty --target <仓库目录>\.pylib
 claude mcp add uu-term --scope user -e UU_CLI="<uuyc-cli.exe 的完整路径>" -e UU_PYLIB="<仓库目录>\.pylib" -- py -I <仓库目录>\server.py
 ```
 
-## 安装（macOS，同步到 Mac）
+注册后新开一个 Claude 会话，即可让它调用 `uu_exec`，例如："在穿墙上执行 `hostname`"。
 
-1. 把整个 `uu-term-mcp` 文件夹放到 Mac 上（见下面"同步方式"）。
-2. Mac 上装好 UU 远程并登录**同一个账号**（这样设备列表里才有"穿墙"），确认终端里能执行 `uuyc-cli device list`；找不到的话用 `which uuyc-cli` 或在 UU 安装目录里找，把完整路径填进 `UU_CLI`。
-3. 注册（macOS 自带 `python3`，无需装依赖）：
-   ```bash
-   claude mcp add uu-term --scope user -e UU_CLI=/path/to/uuyc-cli -- python3 /path/to/uu-term-mcp/server.py
-   ```
-4. 自测：`python3 server.py --devices`，再 `python3 server.py --exec "hostname; whoami"`。
+## 安装（macOS，仅设备列表）
 
-## 同步方式
+```bash
+./install-mac.sh
+```
 
-- **推荐：放进 git 仓库**，两台机器 `git pull` 即可保持一致。这个目录目前不是 git 仓库，要建的话在目录里 `git init`，推到你自己的 GitHub 私有仓库。
-- 或者用 UU 的"文件传输"、AirDrop、网盘直接拷贝（只有 `server.py` 和本文件）。
-- 两台机器各自要执行一次 `claude mcp add`，MCP 配置不会随文件夹同步。
+脚本会检测 `uuyc-cli` 并注册 MCP。macOS 上仅 `uu_device_list` 可用，其余工具会返回说明性错误，见上文"平台支持"。
 
 ## 命令行自测
 
 ```
 python server.py --devices
-python server.py --exec "hostname; whoami"        # UU_TIMEOUT=120 可调超时
+python server.py --exec "hostname; whoami"        # UU_TIMEOUT=120 可调超时（仅 Windows）
 ```
 
-## 已验证 / 未验证
+PowerShell 5.1 传参会吞掉双引号，自测时请用单引号包住整条命令，或直接通过 MCP 调用。
 
-- 已验证：stdio 协议（initialize、tools/list、tools/call、错误返回）；用本地 PowerShell 代替远端验证了退出码、引号和多行命令、超时返回；**在真实"穿墙"上**用命令行 `--exec` 验证了：连接、换行保留、中文输出（含中文报错信息）、会话自动清理（跑完 `term ls` 显示无残留会话）。
-- 输出靠 Base64 回传：远端终端是 VT 流，换行会被光标序列吃掉，直接读文本会丢行。
-- 未验证：通过 Claude 实际调用 `uu_exec` 这一层（需要新会话加载 MCP）；macOS（pty 部分用的是标准库，与 Windows 分支不同）。
-- 命令行里用 PowerShell 传带双引号的参数会被吃掉（5.1 的传参问题），自测时请用单引号包整条命令，或直接走 MCP。
+## 环境变量
+
+| 变量 | 说明 |
+|---|---|
+| `UU_CLI` | `uuyc-cli` 的完整路径（默认自动查找） |
+| `UU_DEFAULT_DEVICE` | 默认设备的 ID 或名称（默认「穿墙」） |
+| `UU_PYLIB` | 额外加入 `sys.path` 的目录（`pywinpty` 安装在别处时使用） |
+
+## 验证情况
+
+- 已验证（Windows → Windows）：stdio 协议（`initialize`、`tools/list`、`tools/call`、错误返回）；在真实被控端上验证了连接、换行保留、中文输出（含中文报错信息）、退出码、超时返回、会话自动清理。
+- 已验证（macOS）：`uu_device_list`；执行类工具的平台提示。
+- 实现说明：输出通过 Base64 回传，因为远端终端是 VT 流，换行会被光标移动序列吞掉，直接读取文本会丢行。
 
 ## 已知限制
 
-- 没有文件传输：`uuyc-cli` 没有这个命令。传文件用 UU 界面的"文件传输"，或让被控端 `git pull`。
-- 不支持交互式命令（要输入密码、按 y 之类）；请加参数避开。
-- 每次调用都重新建立会话，约需几秒到十几秒。
+- 不支持文件传输（`uuyc-cli` 没有该命令）。传文件请使用 UU 界面的"文件传输"，或让被控端 `git pull`。
+- 不支持交互式命令（输入密码、确认 y/n 等），请使用非交互参数。
+- 每次调用都会重新建立会话，耗时数秒到十几秒。
+- 输出中的中文在部分情况下可能出现乱码。
+
+## 声明
+
+本项目为个人项目，与网易及 UU 远程无隶属关系。UU 远程、`uuyc-cli` 的权利归其各自所有者。
